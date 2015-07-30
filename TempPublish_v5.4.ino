@@ -16,40 +16,43 @@
 // SETTINGS
 //
  // wifi network
-const char* ssid = "foobarnetwork"; 
- // wifi network password
-const char* pass = "ABCD1234";
+const char* ssid = "foobarnetwork";     // wifi SSID
+const char* pass = "ABCD1234";  // wifi network password
 
- // MQTT Broker IP
-IPAddress server(10,0,8,10);
- /* TOPIC to publish to;
-     This add the Onewire ROM ID to where the XXXXXXXXXXXXXXXX is. 
-     If you change the topic you need to change the 'BackslashStart' variable as well.
-     The backslash you need to specify is before the XXXXXXX starts.
-        eg if your topic was "/test1/hardware/arduino/weather1/XXXXXXXXXXXXXXXX/temperature/current"
-        then you need to write 33 for the BackslashStart varible.
- */
+ // MQTT
+IPAddress server(10,0,8,10);    // MQTT Broker IP, port defaults to 1883
+ // TOPIC to publish to;
+ //    This adds the Onewire ROM ID to where the XXXXXXXXXXXXXXXX is. 
+ //    If you change the topic you need to change the 'BackslashStart' variable as well.
+ //       eg if your topic was "/test1/hardware/arduino/weather1/XXXXXXXXXXXXXXXX/temperature/current"
+ //       then you need to write 33 for the BackslashStart varible.
 char charTopic[] = "/house/hardware/arduino/weather2/XXXXXXXXXXXXXXXX/temperature/current";
-const int BackslashStart = 33;
+const int BackslashStart = 33;  // read above, this is important
  // base topic for LWT, it will automatically add mac address to the end as well
+String lwtTopic = "/lwt/";      // ie. /lwt/esp8266-18:fe:34:a6:4b:af
 
-String lwtTopic = "/lwt/"; 
-
- // the pin for the onewire temperature sensor, can specify multiple pins if needed.
-OneWire  ds[] = {14}; 
+ // OneWire Sensor
+OneWire  ds[] = {14};           // GPIO pin 14
 
  // status LED's
-const int REDled = 12;      // the number of the RED LED pin
-const int GRNled = 13;      // the number of the GREEN LED pin
+const int REDled = 12;          // the GPIO of the RED LED pin
+const int GRNled = 13;          // the GPIO of the GREEN LED pin
 
- // time between each check of the temperatures.
-int nextChk = 40; // ie 30 = 30 seconds
+ // time between each check of the temperatures. NOTE; if enableDeepSleep is true, this won't work
+int nextChk = 40;               // ie 30 = 30 seconds
+boolean mqttKeepAlive = true;   // keep mqtt connection alive.  Mqtt library will disconnect after 15-seconds typically.
+                                // you would normal disable this if your nextChk is time is large.
+
+ // deep sleep, idea: read temperatures every half-hour, so goto sleep.
+boolean enableDeepSleep = true;  // enable deep sleep, this will disable the nextChk and mqttKeepAlive
+int deepsleepfor = 1800;         // 1800secs = 30mins.. how long to deep sleep for in seconds
 
 //
 // END of SETTINGS
 
 void callback(const MQTT::Publish& pub) {
   // handle message arrived
+  Serial.println("publish callback");
 }
 
 WiFiClient wclient;
@@ -77,6 +80,7 @@ String clientName;
 
 void setup(void) {
   Serial.begin(115200);
+  Serial.println("starting...");
   // initialize digital pins for the LEDs.
   pinMode(GRNled, OUTPUT); // LED - GREEN - MQTT Connected
   pinMode(REDled, OUTPUT); // LED - RED - MQTT Not Connected & flashing no wifi
@@ -122,7 +126,7 @@ void loop(void) {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    if (!client.connected()) {
+    while (!client.connected()) {
       Serial.println("Connecting to MQTT Broker");
       digitalWrite(GRNled, LOW);   // turn the GREEN LED OFF
       digitalWrite(REDled, HIGH);   // turn the RED LED ON
@@ -143,7 +147,7 @@ void loop(void) {
     if (client.connected())
       client.loop();
   }
-  
+  Serial.println("starting onewire search");
   byte i;
   byte present = 0;
   byte type_s;
@@ -161,19 +165,35 @@ void loop(void) {
       this_1Wire_Bus++;
     }
     ds[this_1Wire_Bus].reset_search();
-    Serial.print("Pausing between search's... ");
 
-    // delay between checking for the next temperature. 
-    // loop every 10 seconds so we don't get disconnected from broker.
-    int nextChk_noof = int (nextChk / 10); // working out how many times we need to run the loop as we need to call client.loop every 10 seconds
-    for (int i=1; i <= nextChk_noof; i++){
-      if (client.connected())
-        client.loop();
-        Serial.print(i);
-      delay(10000);
-      }
-     Serial.println(""); 
-     return;
+    if (enableDeepSleep)
+    {
+      // deep sleep time
+      // delay(2000); // 2 second delay to make sure all messages have been sent
+      Serial.print("Having a catnap for: ");
+      Serial.print(deepsleepfor);
+      Serial.println(" seconds");
+      ESP.deepSleep((deepsleepfor * 1000000), WAKE_RF_DEFAULT); // Sleep for x seconds.
+    }
+    else
+    {
+      // delay between checking for the next temperature. 
+      // loop every 10 seconds so we don't get disconnected from broker.
+      Serial.print("Pausing between search's... ");
+      int nextChk_noof = int (nextChk / 10); // working out how many times we need to run the loop as we need to call client.loop every 10 seconds
+      for (int i=1; i <= nextChk_noof; i++){
+        if (client.connected() && mqttKeepAlive) {client.loop(); }
+        if (!client.connected()){
+          // toggle LED status
+          digitalWrite(GRNled, LOW);   // turn the GREEN LED OFF
+          digitalWrite(REDled, HIGH);   // turn the RED LED ON
+        }
+        Serial.print(i); 
+        delay(10000);
+        }
+       Serial.println(""); 
+       return;
+    }
   }
   
   Serial.print("ROM =");
@@ -266,5 +286,5 @@ void loop(void) {
   dtostrf(celsius, 4, 2, charMsg);
   client.publish(MQTT::Publish(charTopic,charMsg)
                 .set_qos(2));
-  delay(750); // just adding a small delay between publishing just incase
+  delay(1000); // just adding a small delay between publishing just incase
 }
